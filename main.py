@@ -21,7 +21,15 @@ app = FastAPI(title="AASRA AI Engine", description="Disaster Management AI Backe
 # Initialize Firebase Admin using the local service account key
 # Ensure 'firebase-key.json' is located in the same directory as this file
 try:
-    cred = credentials.Certificate("firebase-key.json")
+    # Check if running locally
+    if os.path.exists("firebase-key.json"):
+        cred = credentials.Certificate("firebase-key.json")
+    # Check if running on Render Cloud
+    elif os.path.exists("/etc/secrets/firebase-key.json"):
+        cred = credentials.Certificate("/etc/secrets/firebase-key.json")
+    else:
+        raise RuntimeError("Firebase key not found! Please check Secret Files.")
+
     # Prevent re-initialization error if running in a hot-reloading environment
     if not firebase_admin._apps:
         firebase_admin.initialize_app(cred)
