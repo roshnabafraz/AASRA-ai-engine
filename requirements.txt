@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+firebase-admin
+torch
+torchvision
+scikit-learn
+pillow
+requests
+numpy
