@@ -20,15 +20,31 @@ app = FastAPI(title="AASRA AI Engine", description="Disaster Management AI Backe
 
 # Initialize Firebase Admin using the local service account key
 # Ensure 'firebase-key.json' is located in the same directory as this file
+firebase_err = "Not executed"
 try:
-    # Check if running locally
+    path_tried = "None"
+    
+    # Check if running locally (could be firebase-key.json or .json.json)
     if os.path.exists("firebase-key.json"):
+        path_tried = "./firebase-key.json"
         cred = credentials.Certificate("firebase-key.json")
-    # Check if running on Render Cloud
+    elif os.path.exists("firebase-key.json.json"):
+        path_tried = "./firebase-key.json.json"
+        cred = credentials.Certificate("firebase-key.json.json")
+        
+    # Check if running on Render Cloud Native or Docker
     elif os.path.exists("/etc/secrets/firebase-key.json"):
+        path_tried = "/etc/secrets/firebase-key.json"
         cred = credentials.Certificate("/etc/secrets/firebase-key.json")
+    elif os.path.exists("/etc/secrets/firebase-key.json.json"):
+        path_tried = "/etc/secrets/firebase-key.json.json"
+        cred = credentials.Certificate("/etc/secrets/firebase-key.json.json")
+        
     else:
-        raise RuntimeError("Firebase key not found! Please check Secret Files.")
+        # Fallback to check if it's injected to /app/ by some Docker/Render quirk
+        files_in_etc = os.listdir("/etc/secrets") if os.path.exists("/etc/secrets") else "no_etc_secrets"
+        files_in_root = os.listdir(".")
+        raise RuntimeError(f"Key not found! /etc/secrets: {files_in_etc}. Root: {files_in_root}")
 
     # Prevent re-initialization error if running in a hot-reloading environment
     if not firebase_admin._apps:
@@ -36,6 +52,8 @@ try:
     db = firestore.client()
 except Exception as e:
     print(f"Warning: Firebase not initialized. {e}")
+    # Store exact error and the path we tried to load so we can debug cleanly
+    firebase_err = f"[{type(e).__name__}] {str(e)} | Path: {path_tried}"
     db = None
 
 # ==========================================
@@ -180,7 +198,7 @@ async def process_report(report_id: str):
     and updates the Firestore document with the results (priority, AI_Verified, fraud_flag, status).
     """
     if db is None:
-        raise HTTPException(status_code=500, detail="Firebase database not initialized. Check firebase-key.json.")
+        raise HTTPException(status_code=500, detail=f"Firebase DB failed to initialize. Error details: {firebase_err}")
         
     try:
         # Fetch the report document from Firestore
