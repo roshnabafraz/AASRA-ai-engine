@@ -5,10 +5,7 @@ from io import BytesIO
 from fastapi import FastAPI, HTTPException
 import firebase_admin
 from firebase_admin import credentials, firestore
-import torch
-import torchvision.models as models
-from torchvision import transforms
-from PIL import Image
+from transformers import pipeline
 import requests
 from sklearn.ensemble import IsolationForest
 import numpy as np
@@ -57,44 +54,37 @@ except Exception as e:
     db = None
 
 # ==========================================
-# 1. PyTorch Setup (Image Verification)
+# 1. Scikit-Learn Setup (Advanced Fraud Detection)
 # ==========================================
-print("Loading MobileNetV2 model...")
-# Load pre-trained MobileNetV2 in evaluation mode
-try:
-    # Use newer Weights API if torchvision is updated, otherwise fallback to pretrained=True
-    weights = models.MobileNet_V2_Weights.DEFAULT
-    mobilenet_model = models.mobilenet_v2(weights=weights)
-except AttributeError:
-    mobilenet_model = models.mobilenet_v2(pretrained=True)
-mobilenet_model.eval()
+print("Training Scikit-Learn IsolationForest model (Advanced)...")
+# Create a dummy training array representing multi-dimensional features:
+# [total_reports_last_5_mins, average_text_length, time_variance_seconds]
+# Normal users send 1-4 reports with reasonable text length and high variance between reports.
+# Spammers send 10+ reports with very short text (e.g. "help") and very low variance.
+np.random.seed(42)
+X_normal = np.column_stack((
+    np.random.poisson(lam=1.5, size=80) + 1,        # 1-4 reports
+    np.random.normal(loc=120, scale=30, size=80),   # 90-150 chars
+    np.random.normal(loc=300, scale=50, size=80)    # high time variance
+))
+X_fraud = np.column_stack((
+    np.random.poisson(lam=15, size=20) + 10,        # 15-30 reports
+    np.random.normal(loc=15, scale=5, size=20),     # 10-20 chars (bot-like)
+    np.random.normal(loc=5, scale=2, size=20)       # 3-7 seconds variance (scripted)
+))
+X_train = np.vstack((X_normal, X_fraud))
 
-# Standard image transforms for MobileNetV2
-image_transforms = transforms.Compose([
-    transforms.Resize(256),
-    transforms.CenterCrop(224),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-])
-print("PyTorch model loaded successfully.")
-
-# ==========================================
-# 2. Scikit-Learn Setup (Fraud Detection)
-# ==========================================
-print("Training Scikit-Learn IsolationForest model...")
-# Create a dummy training array representing user reporting frequency.
-# Normal users send 1-2 reports; spammers send 10+.
-# The array contains individual report counts for various simulated users.
-X_train = np.array([
-    [1], [2], [1], [1], [0], [3], [2], [1], [2],  # Normal report counts
-    [14], [25], [11], [30]                        # Abnormally high report counts (spam/fraud)
-])
-
-# Initialize and fit the Scikit-learn IsolationForest model
-# 'contamination' is the expected proportion of outliers (fraudsters)
-fraud_model = IsolationForest(contamination=0.15, random_state=42)
+fraud_model = IsolationForest(contamination=0.20, random_state=42)
 fraud_model.fit(X_train)
 print("Scikit-Learn model trained successfully.")
+
+# ==========================================
+# 2. Transformers Setup (Advanced NLP Priority)
+# ==========================================
+print("Loading HuggingFace Zero-Shot Classification Model...")
+# We use a lightweight cross-encoder for zero-shot classification to understand urgency deeply
+priority_classifier = pipeline("zero-shot-classification", model="cross-encoder/nli-distilroberta-base")
+print("HuggingFace model loaded successfully.")
 
 # ==========================================
 # 3. AI Functions
@@ -102,61 +92,32 @@ print("Scikit-Learn model trained successfully.")
 
 def analyze_priority(text: str) -> str:
     """
-    1. A rule-based NLP function returning 'High', 'Medium', or 'Low' 
-       based on crisis keywords.
+    1. Uses a Zero-Shot Classification Pipeline to assign 'High', 'Medium', or 'Low' 
+       based on the actual semantic urgency of the text.
     """
-    if not text:
+    if not text or len(text.strip()) < 3:
         return 'Low'
-        
-    text_lower = text.lower()
-    
-    # Priority keyword lists
-    high_keywords = ['fire', 'earthquake', 'flood', 'trapped', 'blood', 'dying', 'emergency', 'help', 'critical', 'blast', 'collapse']
-    medium_keywords = ['injury', 'accident', 'damage', 'power', 'water', 'food', 'shelter', 'blocked', 'hurt']
-    
-    # Check for high priority keywords first
-    if any(keyword in text_lower for keyword in high_keywords):
-        return 'High'
-    # Then check for medium priority keywords
-    elif any(keyword in text_lower for keyword in medium_keywords):
-        return 'Medium'
-    else:
-        return 'Low'
-
-def verify_image(image_url: str) -> bool:
-    """
-    2. Downloads an image using requests, runs it through the PyTorch MobileNetV2 tensor, 
-       and returns True if successful.
-    """
-    if not image_url:
-        return False
         
     try:
-        # Download the image via requests
-        response = requests.get(image_url, timeout=10)
-        response.raise_for_status()
+        candidate_labels = ["critical life-threatening emergency", "moderate incident requiring assistance", "low priority information"]
+        result = priority_classifier(text, candidate_labels)
+        top_label = result['labels'][0]
         
-        # Load image into Pillow
-        image = Image.open(BytesIO(response.content)).convert("RGB")
-        
-        # Apply standard transforms and prepare tensor batch (1, C, H, W)
-        input_tensor = image_transforms(image).unsqueeze(0)
-        
-        # Pass the tensor through MobileNetV2
-        with torch.no_grad():
-            output = mobilenet_model(input_tensor)
-            
-        # If no exceptions were raised during tensor processing and model forward pass,
-        # consider the image successfully verified by AI.
-        return True
+        if top_label == "critical life-threatening emergency":
+            return 'High'
+        elif top_label == "moderate incident requiring assistance":
+            return 'Medium'
+        else:
+            return 'Low'
     except Exception as e:
-        print(f"Error verifying image from URL {image_url}: {e}")
-        return False
+        print(f"Error in zero-shot classification: {e}")
+        # Fallback to basic length heuristic if model fails
+        return 'Medium' if len(text) > 20 else 'Low'
 
 def detect_fraud(user_id: str) -> bool:
     """
-    3. Queries Firestore for the user's report count in the last 5 minutes. 
-       Passes this count into the Scikit-learn IsolationForest model to return True (fraud) or False.
+    2. Queries Firestore for the user's recent reports. Extracts features 
+       (count, avg length, variance) and predicts using Scikit-Learn IsolationForest.
     """
     if not user_id or db is None:
         return False
@@ -165,8 +126,6 @@ def detect_fraud(user_id: str) -> bool:
         # Define the time window: 5 minutes ago from now (UTC time)
         five_mins_ago = datetime.now(timezone.utc) - timedelta(minutes=5)
         
-        # Query Firestore for reports generated by the user within the last 5 minutes
-        # Note: A composite index on 'user_id' and 'timestamp' may be required in Firestore.
         reports_ref = db.collection('reports')
         
         # Using stream() to retrieve the documents
@@ -174,17 +133,34 @@ def detect_fraud(user_id: str) -> bool:
         recent_reports = list(query.stream())
         report_count = len(recent_reports)
         
-        # Predict outliers using the loaded IsolationForest model
-        # The model expects a 2D array, so we reshape the count into [[report_count]]
-        prediction = fraud_model.predict(np.array([[report_count]]))
+        if report_count == 0:
+            return False
+            
+        # Calculate average text length
+        lengths = [len(r.to_dict().get('description', '')) for r in recent_reports]
+        avg_length = np.mean(lengths) if lengths else 0
         
-        # IsolationForest returns 1 for normal (inliers) and -1 for outliers (fraud/spam)
+        # Calculate time variance
+        if report_count > 1:
+            timestamps = sorted([r.to_dict().get('timestamp').timestamp() for r in recent_reports if r.to_dict().get('timestamp')])
+            if len(timestamps) > 1:
+                diffs = np.diff(timestamps)
+                variance = np.var(diffs)
+            else:
+                variance = 300
+        else:
+            variance = 300
+            
+        # Predict outliers using the loaded IsolationForest model (3D Expected)
+        features = np.array([[report_count, avg_length, variance]])
+        prediction = fraud_model.predict(features)
+        
+        # IsolationForest returns 1 for normal and -1 for outliers
         is_fraud = bool(prediction[0] == -1)
         return is_fraud
         
     except Exception as e:
         print(f"Error detecting fraud for user {user_id}: {e}")
-        # Default to false so we don't accidentally block legitimate users when an error occurs
         return False
 
 # ==========================================
@@ -217,18 +193,16 @@ async def process_report(report_id: str):
         
         print(f"Processing report: {report_id} for user: {user_id}")
         
-        # Run AI Functions (Sections 3.1, 3.2, 3.3)
+        # Run AI Functions
         priority = analyze_priority(description)
-        ai_verified = verify_image(image_url) if image_url else False
         fraud_flag = detect_fraud(user_id) if user_id else False
         
         # Determine current status mapping based on the fraud detection outcome.
         status = 'Rejected' if fraud_flag else 'Processed'
         
-        # Prepare the update dictionary with exactly the fields requested
+        # Prepare the update dictionary
         updates = {
             'priority': priority,
-            'AI_Verified': ai_verified,
             'fraud_flag': fraud_flag,
             'status': status
         }
